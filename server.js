@@ -15,19 +15,16 @@ const Chat = require('./models/Chat');
 const app = express();
 const PORT = 3000;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
-// MongoDB Connection
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true
 }).then(() => console.log("✅ MongoDB connected"))
   .catch(err => console.error("❌ MongoDB error:", err));
 
-// Auth Middleware
 function verifyToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   if (!authHeader) return res.status(401).json({ error: 'Token missing' });
@@ -42,14 +39,13 @@ function verifyToken(req, res, next) {
   }
 }
 
-// Cohere AI
 const cohere = new CohereClient({ token: process.env.COHERE_API_KEY });
 
-// DSA Keywords
 const dsaKeywords = [
   "sort", "stack", "queue", "tree", "graph", "heap", "hash",
   "search", "traversal", "linked list", "recursion", "algorithm",
-  "binary", "complexity", "heap sort", "dsa", "data structure"
+  "binary", "complexity", "heap sort", "quick sort", "merge sort", "linear search",
+  "binary search", "insertion sort", "selection sort", "bubble sort", "dsa"
 ];
 
 function isDSARelated(text) {
@@ -57,54 +53,92 @@ function isDSARelated(text) {
   return dsaKeywords.some(keyword => lower.includes(keyword));
 }
 
-// Multer Setup for File Upload
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, 'uploads/'),
   filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
 });
 const upload = multer({ storage });
 
-// Dynamic Prompt Generator
-function enhancePrompt(rawInput) {
-  const lower = rawInput.toLowerCase();
-  const sections = [];
-
-  const possibleSections = {
-    introduction: ['introduction', 'intro'],
-    advantages: ['advantages', 'pros', 'benefits'],
-    disadvantages: ['disadvantages', 'cons', 'limitations'],
-    pseudocode: ['pseudocode', 'pseudo code', 'algorithm'],
-    applications: ['applications', 'uses', 'use cases']
-  };
-
-  // Detect mentioned sections
-  for (const [section, keywords] of Object.entries(possibleSections)) {
-    if (keywords.some(word => lower.includes(word))) {
-      sections.push(capitalize(section));
-    }
-  }
-
-  // Remove known words to extract concept
-  const cleaned = rawInput.replace(
-    /(introduction|intro|advantages|pros|benefits|disadvantages|cons|limitations|pseudocode|pseudo code|algorithm|applications|uses|use cases)/gi,
-    ''
-  ).replace(/[^a-zA-Z0-9\s]/g, '').trim();
-
-  const topic = cleaned || "this concept";
-  const allSections = ["Introduction", "Advantages", "Disadvantages", "Pseudocode", "Applications"];
-  const finalSections = sections.length ? sections : allSections;
-
-  return `You are a helpful DSA tutor. Explain the concept "${topic}" with focus on:
-${finalSections.join('\n')}`;
-}
-
 function capitalize(str) {
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
-// Routes
+// ✅ Enhanced for detecting ONLY ONE section (like 'pseudocode') and responding accordingly
+function enhancePrompt(rawInput) {
+  const lower = rawInput.toLowerCase();
+  const possibleSections = {
+    Introduction: ['introduction', 'intro'],
+    Advantages: ['advantages', 'pros', 'benefits'],
+    Disadvantages: ['disadvantages', 'cons', 'limitations'],
+    Pseudocode: ['pseudocode', 'pseudo code', 'algorithm'],
+    Applications: ['applications', 'uses', 'use cases'],
+    Examples: ['examples', 'sample code', 'code examples']
+  };
 
-// Register
+  const sections = [];
+  let matchedSection = null;
+
+  for (const [section, keywords] of Object.entries(possibleSections)) {
+    if (keywords.some(word => lower.includes(word))) {
+      matchedSection = section;
+      sections.push(section);
+    }
+  }
+
+  // Remove section-related keywords from the topic
+  const cleaned = rawInput.replace(
+    /(introduction|intro|advantages|pros|benefits|disadvantages|cons|limitations|pseudocode|pseudo code|algorithm|applications|uses|use cases|examples|sample code|code examples)/gi,
+    ''
+  ).replace(/[^a-zA-Z0-9\s]/g, '').trim();
+
+  const topic = cleaned || "this concept";
+
+  // Only include the matched section or all if none found
+  const finalSections = matchedSection ? [matchedSection] : ["Introduction", "Advantages", "Disadvantages", "Pseudocode", "Applications", "Examples"];
+
+  return `You are a helpful DSA tutor. Explain the concept "${topic}" with focus on:\n${finalSections.join('\n')}`;
+}
+
+function parseOperationPrompt(prompt) {
+  const lower = prompt.toLowerCase();
+  const arrayMatch = prompt.match(/\[.*?\]/);
+  const numberArray = arrayMatch ? arrayMatch[0].replace(/[\[\]\s]/g, '').split(',').map(Number) : null;
+  const valueMatch = prompt.match(/find\s+(\d+)/i);
+  const valueToFind = valueMatch ? parseInt(valueMatch[1]) : null;
+
+  const operationMap = {
+    'linear search': 'Linear Search',
+    'binary search': 'Binary Search',
+    'bubble sort': 'Bubble Sort',
+    'selection sort': 'Selection Sort',
+    'insertion sort': 'Insertion Sort',
+    'quick sort': 'Quick Sort',
+    'merge sort': 'Merge Sort',
+    'heap sort': 'Heap Sort'
+  };
+
+  for (const [keyword, label] of Object.entries(operationMap)) {
+    if (lower.includes(keyword)) {
+      return {
+        operation: label,
+        array: numberArray,
+        target: valueToFind
+      };
+    }
+  }
+  return null;
+}
+
+function buildExecutionPrompt(operation, array, target) {
+  let prompt = `You are a DSA tutor. Show step-by-step ${operation} on the array: [${array.join(', ')}].\n`;
+  if (target !== null) {
+    prompt += `The element to find is: ${target}.\n`;
+  }
+  prompt += "Show step-by-step execution in a friendly and clear way with each iteration.";
+  return prompt;
+}
+
+// Routes
 app.post('/auth/register', async (req, res) => {
   const { username, password } = req.body;
   const existing = await User.findOne({ username });
@@ -118,7 +152,6 @@ app.post('/auth/register', async (req, res) => {
   res.json({ token, username });
 });
 
-// Login
 app.post('/auth/login', async (req, res) => {
   const { username, password } = req.body;
   const user = await User.findOne({ username });
@@ -131,7 +164,6 @@ app.post('/auth/login', async (req, res) => {
   res.json({ token, username });
 });
 
-// New Chat
 app.post('/chat/new', verifyToken, async (req, res) => {
   const chat = new Chat({
     userId: req.user.id,
@@ -142,9 +174,14 @@ app.post('/chat/new', verifyToken, async (req, res) => {
   res.json(chat);
 });
 
-// Chat Message (without file)
 app.post('/chat', verifyToken, async (req, res) => {
   const { message, chatId } = req.body;
+
+  const parsed = parseOperationPrompt(message);
+  const promptToSend = parsed
+    ? buildExecutionPrompt(parsed.operation, parsed.array, parsed.target)
+    : enhancePrompt(message);
+
   if (!isDSARelated(message)) {
     return res.json({ reply: '⚠️ Please ask only Data Structures & Algorithms related questions.' });
   }
@@ -152,7 +189,7 @@ app.post('/chat', verifyToken, async (req, res) => {
   try {
     const response = await cohere.chat({
       model: "command-r",
-      message: enhancePrompt(message)
+      message: promptToSend
     });
 
     const text = response.text;
@@ -170,7 +207,6 @@ app.post('/chat', verifyToken, async (req, res) => {
   }
 });
 
-// Chat Message with File Upload
 app.post('/chat/file', verifyToken, upload.single('file'), async (req, res) => {
   const { message, chatId } = req.body;
   const filePath = req.file?.path;
@@ -180,16 +216,20 @@ app.post('/chat/file', verifyToken, upload.single('file'), async (req, res) => {
   }
 
   try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    const combined = `${message}\n\nFile Content:\n${content}`;
+    const fileContent = fs.readFileSync(filePath, 'utf8');
+    const combined = `${message}\n\nFile Content:\n${fileContent}`;
+    const parsed = parseOperationPrompt(combined);
+    const promptToSend = parsed
+      ? buildExecutionPrompt(parsed.operation, parsed.array, parsed.target)
+      : enhancePrompt(combined);
 
-    if (!isDSARelated(message) || !isDSARelated(content)) {
+    if (!isDSARelated(message) || !isDSARelated(fileContent)) {
       return res.json({ reply: '⚠️ The prompt or file is not related to Data Structures & Algorithms.' });
     }
 
     const response = await cohere.chat({
       model: "command-r",
-      message: enhancePrompt(combined)
+      message: promptToSend
     });
 
     const text = response.text;
@@ -207,13 +247,11 @@ app.post('/chat/file', verifyToken, upload.single('file'), async (req, res) => {
   }
 });
 
-// Get All Chats
 app.get('/chats', verifyToken, async (req, res) => {
   const chats = await Chat.find({ userId: req.user.id }).sort({ createdAt: -1 });
   res.json(chats);
 });
 
-// Rename Chat
 app.post('/chat/rename', verifyToken, async (req, res) => {
   const { chatId, title } = req.body;
   const chat = await Chat.findOne({ _id: chatId, userId: req.user.id });
@@ -224,13 +262,44 @@ app.post('/chat/rename', verifyToken, async (req, res) => {
   res.json({ message: 'Renamed successfully' });
 });
 
-// Delete Chat
+app.post('/chat/regenerate', verifyToken, async (req, res) => {
+  const { chatId, userPrompt } = req.body;
+
+  const parsed = parseOperationPrompt(userPrompt);
+  const promptToSend = parsed
+    ? buildExecutionPrompt(parsed.operation, parsed.array, parsed.target)
+    : enhancePrompt(userPrompt);
+
+  if (!isDSARelated(userPrompt)) {
+    return res.json({ reply: '⚠️ Please ask only Data Structures & Algorithms related questions.' });
+  }
+
+  try {
+    const response = await cohere.chat({
+      model: "command-r",
+      message: promptToSend
+    });
+
+    const text = response.text;
+    const chat = await Chat.findById(chatId);
+    if (!chat) return res.status(404).json({ reply: "❌ Chat not found" });
+
+    chat.messages.push({ type: 'bot', text });
+    await chat.save();
+
+    res.json({ reply: text });
+  } catch (err) {
+    console.error("❌ Cohere API error:", err.message);
+    res.status(500).json({ reply: "❌ Cohere API error" });
+  }
+});
+
+
 app.delete('/chat/:id', verifyToken, async (req, res) => {
   await Chat.deleteOne({ _id: req.params.id, userId: req.user.id });
   res.json({ message: 'Deleted successfully' });
 });
 
-// Start Server
 app.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
